@@ -3,11 +3,13 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Calendar, Target, Clock, Eye, Trash2, Printer } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts';
 import { getPatientById, getPatientSessions, deletePatientAndSessions } from '../utils/firebaseServices';
+import { useAuth } from '../contexts/AuthContext';
 import GenerateReportModal from '../components/GenerateReportModal';
 
 export default function PatientProfile() {
     const { patientId } = useParams();
     const navigate = useNavigate();
+    const { currentUser } = useAuth();
 
     const [patient, setPatient] = useState(null);
     const [sessions, setSessions] = useState([]);
@@ -18,7 +20,7 @@ export default function PatientProfile() {
     useEffect(() => {
         const loadData = async () => {
             try {
-                const patData = await getPatientById(patientId);
+                const patData = await getPatientById(currentUser.uid, patientId);
                 if (patData) {
                     setPatient(patData);
                     const sessData = await getPatientSessions(patientId);
@@ -30,8 +32,8 @@ export default function PatientProfile() {
                 setLoading(false);
             }
         };
-        loadData();
-    }, [patientId]);
+        if (currentUser) loadData();
+    }, [patientId, currentUser]);
 
     if (loading) {
         return <div style={{ textAlign: 'center', paddingTop: 80 }}>Loading Profile...</div>;
@@ -47,9 +49,8 @@ export default function PatientProfile() {
     }
 
     // Generate progress data suitable for Recharts from real sessions
-    // Take the last 30 days of sessions or just sort chronologically
     const progressData = [...sessions]
-        .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)) // Ascending for chart
+        .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
         .map(s => {
             const dateObj = new Date(s.timestamp);
             return {
@@ -67,7 +68,7 @@ export default function PatientProfile() {
         if (window.confirm(`Are you sure you want to completely delete ${patient.full_name} and ALL their session data? This cannot be undone.`)) {
             setIsDeleting(true);
             try {
-                await deletePatientAndSessions(patient.id);
+                await deletePatientAndSessions(currentUser.uid, patient.id);
                 navigate('/');
             } catch (error) {
                 console.error("Error deleting patient:", error);

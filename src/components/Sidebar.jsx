@@ -6,13 +6,28 @@ import {
     LogOut,
     Activity,
 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 
 export default function Sidebar() {
     const navigate = useNavigate();
+    const { logout, therapistProfile } = useAuth();
 
-    const handleLogout = () => {
-        // For demo: just navigate to login
-        navigate('/login');
+    const therapistName = therapistProfile?.name || 'Therapist';
+    const therapistSpecialization = therapistProfile?.specialization || '';
+    const initials = therapistName
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .substring(0, 2)
+        .toUpperCase();
+
+    const handleLogout = async () => {
+        try {
+            await logout();
+            navigate('/login');
+        } catch (error) {
+            console.error('Logout failed:', error);
+        }
     };
 
     const links = [
@@ -66,11 +81,13 @@ export default function Sidebar() {
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         fontSize: 14, fontWeight: 700, color: '#0a0e1a',
                     }}>
-                        DW
+                        {initials}
                     </div>
-                    <div>
-                        <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>Dr. Wasi</p>
-                        <p style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>NCCI Karachi</p>
+                    <div style={{ overflow: 'hidden' }}>
+                        <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{therapistName}</p>
+                        <p style={{ fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {therapistSpecialization || 'Physiotherapist'}
+                        </p>
                     </div>
                 </div>
                 <button
