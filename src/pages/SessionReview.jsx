@@ -1,16 +1,76 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, AlertCircle, Clock, Target, Zap, Printer } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import SkeletonCanvas from '../components/SkeletonCanvas';
 import { generateMockRecording } from '../utils/mockData';
+import { getSessionById } from '../utils/firebaseServices';
 
 export default function SessionReview() {
     const { sessionId } = useParams();
     const navigate = useNavigate();
 
-    // Generate mock recording for this session
-    const recording = useMemo(() => generateMockRecording(120), []);
+    const [sessionData, setSessionData] = useState(null);
+    const [loadingSession, setLoadingSession] = useState(true);
+
+    // Fetch real session from Firebase
+    useEffect(() => {
+        const load = async () => {
+            try {
+                const sess = await getSessionById(sessionId);
+                setSessionData(sess);
+            } catch (err) {
+                console.error('Failed to load session:', err);
+            } finally {
+                setLoadingSession(false);
+            }
+        };
+        load();
+    }, [sessionId]);
+
+    // Build the recording object from real data or fall back to mock
+    const recording = useMemo(() => {
+        if (!sessionData) return generateMockRecording(120);
+
+        // Unity stores the full per-frame recording as a JSON string in
+        // the `recordingData` field.  Parse it if present.
+        let parsedRecording = null;
+        if (sessionData.recordingData) {
+            try {
+                parsedRecording = typeof sessionData.recordingData === 'string'
+                    ? JSON.parse(sessionData.recordingData)
+                    : sessionData.recordingData;
+            } catch (e) {
+                console.warn('recordingData JSON parse failed, using mock frames', e);
+            }
+        }
+
+        // Build summary from the flat session fields
+        const summary = {
+            patient_id:    sessionData.patient_id   ?? 'unknown',
+            patient_name:  sessionData.patient_name ?? sessionData.patient_id ?? 'Patient',
+            exercise:      sessionData.exercise      ?? 'exercise',
+            timestamp:     sessionData.timestamp     ?? new Date().toISOString(),
+            duration_sec:  Number(sessionData.duration_sec)  || 0,
+            total_reps:    Number(sessionData.total_reps)    || 0,
+            total_frames:  Number(sessionData.total_frames)  || 0,
+            accuracy:      Number(sessionData.accuracy)      || 0,
+            error_flags_detected: Array.isArray(sessionData.error_flags)
+                ? sessionData.error_flags
+                : [],
+        };
+
+        // If Unity sent per-frame data, use it; otherwise generate mock frames
+        const frames = parsedRecording?.Items ?? parsedRecording?.frames ?? null;
+        if (frames && Array.isArray(frames) && frames.length > 0) {
+            return { summary, frames };
+        }
+
+        // No per-frame data — generate mock frames but use real summary stats
+        const mock = generateMockRecording(summary.total_frames || 120);
+        return { summary, frames: mock.frames };
+    }, [sessionData]);
+
     const summary = recording.summary;
 
     const [currentFrame, setCurrentFrame] = useState(0);
@@ -63,6 +123,10 @@ export default function SessionReview() {
         }
         return null;
     };
+
+    if (loadingSession) {
+        return <div style={{ textAlign: 'center', paddingTop: 80, color: 'var(--color-text-muted)' }}>Loading Session...</div>;
+    }
 
     return (
         <div className="animate-fade-in">
