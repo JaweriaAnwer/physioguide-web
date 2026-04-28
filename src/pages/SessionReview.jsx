@@ -1,77 +1,65 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertCircle, Clock, Target, Zap, Printer } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Clock, Target, Zap, Printer, WifiOff } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import SkeletonCanvas from '../components/SkeletonCanvas';
-import { generateMockRecording } from '../utils/mockData';
-import { getSessionById } from '../utils/firebaseServices';
+import { findSessionAcrossPatients } from '../utils/firebaseServices';
+import { useAuth } from '../contexts/AuthContext';
 
 export default function SessionReview() {
     const { sessionId } = useParams();
     const navigate = useNavigate();
+    const { currentUser } = useAuth();
 
     const [sessionData, setSessionData] = useState(null);
+    const [patientName, setPatientName] = useState('Patient');
     const [loadingSession, setLoadingSession] = useState(true);
+    const [notFound, setNotFound] = useState(false);
 
-    // Fetch real session from Firebase
+    // Fetch real session from Firebase nested subcollection
     useEffect(() => {
         const load = async () => {
+            if (!currentUser) return;
             try {
-                const sess = await getSessionById(sessionId);
-                setSessionData(sess);
+                const result = await findSessionAcrossPatients(currentUser.uid, sessionId);
+                if (result) {
+                    setSessionData(result.session);
+                    setPatientName(result.patientName);
+                } else {
+                    setNotFound(true);
+                }
             } catch (err) {
                 console.error('Failed to load session:', err);
+                setNotFound(true);
             } finally {
                 setLoadingSession(false);
             }
         };
         load();
-    }, [sessionId]);
+    }, [sessionId, currentUser]);
 
-    // Build the recording object from real data or fall back to mock
+    // Build the recording object from real Firebase data
     const recording = useMemo(() => {
-        if (!sessionData) return generateMockRecording(120);
+        if (!sessionData) return null;
 
-        // Unity stores the full per-frame recording as a JSON string in
-        // the `recordingData` field.  Parse it if present.
-        let parsedRecording = null;
-        if (sessionData.recordingData) {
-            try {
-                parsedRecording = typeof sessionData.recordingData === 'string'
-                    ? JSON.parse(sessionData.recordingData)
-                    : sessionData.recordingData;
-            } catch (e) {
-                console.warn('recordingData JSON parse failed, using mock frames', e);
-            }
-        }
+        // recordingData is the Items array Unity stores — array of per-frame objects
+        const frames = Array.isArray(sessionData.recordingData) && sessionData.recordingData.length > 0
+            ? sessionData.recordingData
+            : null;
 
-        // Build summary from the flat session fields
         const summary = {
-            patient_id:    sessionData.patient_id   ?? 'unknown',
-            patient_name:  sessionData.patient_name ?? sessionData.patient_id ?? 'Patient',
-            exercise:      sessionData.exercise      ?? 'exercise',
-            timestamp:     sessionData.timestamp     ?? new Date().toISOString(),
-            duration_sec:  Number(sessionData.duration_sec)  || 0,
-            total_reps:    Number(sessionData.total_reps)    || 0,
-            total_frames:  Number(sessionData.total_frames)  || 0,
-            accuracy:      Number(sessionData.accuracy)      || 0,
-            error_flags_detected: Array.isArray(sessionData.error_flags)
-                ? sessionData.error_flags
-                : [],
+            patient_id:   sessionData.patient_id   ?? 'unknown',
+            patient_name: patientName,
+            exercise:     sessionData.exercise      ?? 'exercise',
+            timestamp:    sessionData.timestamp     ?? new Date().toISOString(),
+            duration_sec: Number(sessionData.duration_sec)  || 0,
+            total_reps:   Number(sessionData.total_reps)    || 0,
+            accuracy:     Number(sessionData.accuracy)      || 0,
+            error_flags_detected: Array.isArray(sessionData.error_flags) ? sessionData.error_flags : [],
         };
 
-        // If Unity sent per-frame data, use it; otherwise generate mock frames
-        const frames = parsedRecording?.Items ?? parsedRecording?.frames ?? null;
-        if (frames && Array.isArray(frames) && frames.length > 0) {
-            return { summary, frames };
-        }
-
-        // No per-frame data — generate mock frames but use real summary stats
-        const mock = generateMockRecording(summary.total_frames || 120);
-        return { summary, frames: mock.frames };
-    }, [sessionData]);
-
-    const summary = recording.summary;
+        return { summary, frames };
+    }, [sessionData, patientName]);
 
     const [currentFrame, setCurrentFrame] = useState(0);
     const [currentFrameData, setCurrentFrameData] = useState(null);
@@ -81,25 +69,31 @@ export default function SessionReview() {
         setCurrentFrameData(frameData);
     }, []);
 
-    // Build SEA (Shoulder Elevation Angle) chart data
+    // Build SEA chart data from real frame metrics
     const seaData = useMemo(() => {
+        if (!recording?.frames) return [];
         return recording.frames.map((f, idx) => ({
             frame: idx,
             time: (idx / 30).toFixed(1),
-            SEA: f.metrics.SEA,
-            hasError: Object.values(f.error_flags).some(Boolean),
+            SEA: Number(f?.metrics?.SEA) || 0,
+            hasError: f?.error_flags
+                ? Object.values(f.error_flags).some(Boolean)
+                : false,
         }));
     }, [recording]);
 
-    // Build error log
+    // Build error log from real frame error_flags
     const errorLog = useMemo(() => {
+        if (!recording?.frames) return [];
         const log = [];
         recording.frames.forEach((f, idx) => {
-            const errors = Object.entries(f.error_flags).filter(([, v]) => v).map(([k]) => k);
+            if (!f?.error_flags) return;
+            const errors = Object.entries(f.error_flags)
+                .filter(([, v]) => v === true)
+                .map(([k]) => k);
             if (errors.length > 0) {
                 const time = `${String(Math.floor(idx / 30 / 60)).padStart(2, '0')}:${String(Math.floor((idx / 30) % 60)).padStart(2, '0')}`;
                 errors.forEach((err) => {
-                    // Avoid duplicate consecutive entries
                     const lastEntry = log[log.length - 1];
                     if (!lastEntry || lastEntry.error !== err || idx - lastEntry.frameIdx > 5) {
                         log.push({ frameIdx: idx, time, error: err, label: err.replace(/_/g, ' ') });
@@ -125,8 +119,92 @@ export default function SessionReview() {
     };
 
     if (loadingSession) {
-        return <div style={{ textAlign: 'center', paddingTop: 80, color: 'var(--color-text-muted)' }}>Loading Session...</div>;
+        return (
+            <div style={{ textAlign: 'center', paddingTop: 80, color: 'var(--color-text-muted)' }}>
+                <div style={{ marginBottom: 12, fontSize: 32 }}>⏳</div>
+                Loading Session...
+            </div>
+        );
     }
+
+    if (notFound || !sessionData) {
+        return (
+            <div className="animate-fade-in" style={{ textAlign: 'center', paddingTop: 80 }}>
+                <WifiOff size={48} style={{ color: 'var(--color-text-muted)', marginBottom: 16 }} />
+                <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Session Not Found</h2>
+                <p style={{ color: 'var(--color-text-muted)', marginBottom: 24, fontSize: 14 }}>
+                    No session data available for this session ID.
+                </p>
+                <button className="btn-ghost" onClick={() => navigate(-1)}>← Go Back</button>
+            </div>
+        );
+    }
+
+    // No per-frame recording data stored
+    if (!recording?.frames) {
+        const summary = recording?.summary;
+        return (
+            <div className="animate-fade-in">
+                <div style={{ marginBottom: 24 }}>
+                    <button className="btn-ghost" onClick={() => navigate(-1)} style={{ marginBottom: 16 }}>
+                        <ArrowLeft size={16} /> Back
+                    </button>
+                    <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>Session Summary</h2>
+                    <div style={{ display: 'flex', gap: 20, fontSize: 13, color: 'var(--color-text-muted)' }}>
+                        <span>{patientName}</span>
+                        <span>•</span>
+                        <span style={{ textTransform: 'capitalize' }}>{summary?.exercise?.replace(/_/g, ' ')}</span>
+                        <span>•</span>
+                        <span>{summary?.timestamp ? new Date(summary.timestamp).toLocaleDateString() : '—'}</span>
+                    </div>
+                </div>
+
+                {/* Session Stats */}
+                <div style={{ display: 'flex', gap: 16, marginBottom: 24 }}>
+                    {[
+                        { icon: Target, label: 'Accuracy', value: `${summary?.accuracy ?? 0}%`, color: (summary?.accuracy ?? 0) >= 80 ? '#22c55e' : '#f59e0b' },
+                        { icon: Clock,  label: 'Duration', value: `${summary?.duration_sec ?? 0}s`, color: '#22d3ee' },
+                        { icon: Zap,    label: 'Reps',     value: summary?.total_reps ?? 0, color: '#8b5cf6' },
+                    ].map(({ icon: Icon, label, value, color }) => (
+                        <div key={label} className="glass-card" style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <Icon size={16} style={{ color }} />
+                            <div>
+                                <p style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{label}</p>
+                                <p style={{ fontSize: 16, fontWeight: 700, color }}>{value}</p>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Error Flags */}
+                <div className="glass-card" style={{ padding: 24 }}>
+                    <h4 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <AlertCircle size={16} style={{ color: '#ef4444' }} />
+                        Compensation Flags Detected
+                    </h4>
+                    {summary?.error_flags_detected?.length === 0 ? (
+                        <p style={{ fontSize: 13, color: '#22c55e' }}>No compensation errors detected ✓</p>
+                    ) : (
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            {summary?.error_flags_detected?.map(err => (
+                                <span key={err} className="badge-error" style={{ textTransform: 'capitalize' }}>
+                                    {err.replace(/_/g, ' ')}
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                <div className="glass-card" style={{ padding: 24, marginTop: 16, textAlign: 'center' }}>
+                    <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>
+                        Frame-by-frame replay is not available — Unity did not upload per-frame recording data for this session.
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
+    const summary = recording.summary;
 
     return (
         <div className="animate-fade-in">
@@ -145,9 +223,9 @@ export default function SessionReview() {
                     <div>
                         <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>Session Analyzer</h2>
                         <div style={{ display: 'flex', gap: 20, fontSize: 13, color: 'var(--color-text-muted)' }}>
-                            <span>{summary.patient_name}</span>
+                            <span>{patientName}</span>
                             <span>•</span>
-                            <span style={{ textTransform: 'capitalize' }}>{summary.exercise}</span>
+                            <span style={{ textTransform: 'capitalize' }}>{summary.exercise.replace(/_/g, ' ')}</span>
                             <span>•</span>
                             <span>{new Date(summary.timestamp).toLocaleDateString()}</span>
                         </div>
@@ -157,8 +235,8 @@ export default function SessionReview() {
                     <div style={{ display: 'flex', gap: 16 }}>
                         {[
                             { icon: Target, label: 'Accuracy', value: `${summary.accuracy}%`, color: summary.accuracy >= 80 ? '#22c55e' : '#f59e0b' },
-                            { icon: Clock, label: 'Duration', value: `${summary.duration_sec}s`, color: '#22d3ee' },
-                            { icon: Zap, label: 'Reps', value: summary.total_reps, color: '#8b5cf6' },
+                            { icon: Clock,  label: 'Duration', value: `${summary.duration_sec}s`, color: '#22d3ee' },
+                            { icon: Zap,    label: 'Reps',     value: summary.total_reps, color: '#8b5cf6' },
                         ].map(({ icon: Icon, label, value, color }) => (
                             <div key={label} className="glass-card" style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
                                 <Icon size={16} style={{ color }} />
@@ -200,7 +278,7 @@ export default function SessionReview() {
                     </div>
 
                     {/* Metrics Panel */}
-                    {currentFrameData && (
+                    {currentFrameData?.metrics && (
                         <div className="glass-card" style={{ padding: 20 }}>
                             <h4 style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Frame Metrics</h4>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
@@ -211,7 +289,7 @@ export default function SessionReview() {
                                     }}>
                                         <p style={{ fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>{key}</p>
                                         <p style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-accent-cyan)' }}>
-                                            {typeof val === 'number' ? val.toFixed(1) : val}
+                                            {typeof val === 'number' ? val.toFixed(3) : val}
                                         </p>
                                     </div>
                                 ))}
@@ -239,8 +317,7 @@ export default function SessionReview() {
                                             display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
                                             borderRadius: 8, fontSize: 12,
                                             background: currentFrame === entry.frameIdx ? 'rgba(239, 68, 68, 0.08)' : 'transparent',
-                                            cursor: 'pointer',
-                                            transition: 'background 0.2s',
+                                            cursor: 'pointer', transition: 'background 0.2s',
                                         }}
                                         onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.06)'}
                                         onMouseLeave={(e) => {

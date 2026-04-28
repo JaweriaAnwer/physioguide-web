@@ -1,6 +1,10 @@
 /**
  * Biomechanics utility functions for skeleton drawing and angle calculations.
  * Used by the SkeletonCanvas replay engine.
+ *
+ * Unity sends raw_landmarks as an array of { x, y, z, vis } objects
+ * where (x, y, z) are MediaPipe Pose world-space coordinates and
+ * `vis` is the visibility confidence (0–1).
  */
 
 // MediaPipe Pose landmark indices
@@ -84,6 +88,15 @@ export function getElbowAngle(landmarks) {
 }
 
 /**
+ * Get visibility value from a landmark.
+ * Unity sends `vis`, MediaPipe SDK uses `visibility` — handle both.
+ */
+function getVis(lm) {
+    if (!lm) return 0;
+    return lm.vis ?? lm.visibility ?? 0;
+}
+
+/**
  * Determine color based on error state for a joint.
  */
 export function getJointColor(hasError) {
@@ -92,15 +105,46 @@ export function getJointColor(hasError) {
 
 /**
  * Draw a skeleton frame on an HTML5 canvas.
+ *
+ * Unity raw_landmarks may use arbitrary world-space coordinates
+ * (not normalized 0–1), so we compute a bounding box and fit
+ * the skeleton into the canvas with a margin.
  */
 export function drawSkeleton(ctx, landmarks, errorFlags = {}, width = 400, height = 500) {
     ctx.clearRect(0, 0, width, height);
 
     if (!landmarks || landmarks.length === 0) return;
 
+    // Only consider visible landmarks (vis >= 0.3) to compute bounding box
+    const visible = landmarks.filter(lm => lm && getVis(lm) >= 0.3);
+    if (visible.length === 0) return;
+
+    // Compute bounding box of visible landmarks
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    for (const lm of visible) {
+        if (lm.x < minX) minX = lm.x;
+        if (lm.x > maxX) maxX = lm.x;
+        if (lm.y < minY) minY = lm.y;
+        if (lm.y > maxY) maxY = lm.y;
+    }
+
+    const rangeX = maxX - minX || 1;
+    const rangeY = maxY - minY || 1;
+
+    // Fit into canvas with 10% margin on each side
+    const margin = 0.1;
+    const drawW = width * (1 - 2 * margin);
+    const drawH = height * (1 - 2 * margin);
+
+    // Maintain aspect ratio
+    const scaleVal = Math.min(drawW / rangeX, drawH / rangeY);
+    const offsetX = width * margin + (drawW - rangeX * scaleVal) / 2;
+    const offsetY = height * margin + (drawH - rangeY * scaleVal) / 2;
+
     const scale = (lm) => ({
-        x: lm.x * width,
-        y: lm.y * height,
+        x: offsetX + (lm.x - minX) * scaleVal,
+        y: offsetY + (lm.y - minY) * scaleVal,
     });
 
     // Determine which joints have errors
@@ -116,12 +160,16 @@ export function drawSkeleton(ctx, landmarks, errorFlags = {}, width = 400, heigh
     if (errorFlags.flexion || errorFlags.extension) {
         errorJoints.add(LANDMARKS.NOSE);
     }
+    if (errorFlags.compensation_trunk) {
+        errorJoints.add(LANDMARKS.LEFT_HIP);
+        errorJoints.add(LANDMARKS.RIGHT_HIP);
+    }
 
     // Draw connections
     SKELETON_CONNECTIONS.forEach(([i, j]) => {
         const a = landmarks[i];
         const b = landmarks[j];
-        if (!a || !b || a.visibility < 0.3 || b.visibility < 0.3) return;
+        if (!a || !b || getVis(a) < 0.3 || getVis(b) < 0.3) return;
 
         const pa = scale(a);
         const pb = scale(b);
@@ -139,7 +187,7 @@ export function drawSkeleton(ctx, landmarks, errorFlags = {}, width = 400, heigh
     // Draw joints
     Object.values(LANDMARKS).forEach((idx) => {
         const lm = landmarks[idx];
-        if (!lm || lm.visibility < 0.3) return;
+        if (!lm || getVis(lm) < 0.3) return;
         const p = scale(lm);
         const hasErr = errorJoints.has(idx);
 
