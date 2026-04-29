@@ -15,16 +15,26 @@ export default function GenerateReportModal({ isOpen, onClose, patient, sessions
 
     // Filter sessions based on selection
     let filteredSessions = sessions;
-    if (reportType === 'single' && selectedSessionId) {
-        filteredSessions = sessions.filter(s => s.id === selectedSessionId);
-    } else if (reportType === 'range' && dateRange.start && dateRange.end) {
-        const start = new Date(dateRange.start);
-        const end = new Date(dateRange.end);
-        end.setHours(23, 59, 59, 999);
-        filteredSessions = sessions.filter(s => {
-            const d = new Date(s.timestamp);
-            return d >= start && d <= end;
-        });
+    const actualSelectedId = selectedSessionId || sessions[0]?.id;
+
+    if (reportType === 'single') {
+        if (actualSelectedId) {
+            filteredSessions = sessions.filter(s => s.id === actualSelectedId);
+        } else {
+            filteredSessions = []; // Should not happen but fail safe
+        }
+    } else if (reportType === 'range') {
+        if (dateRange.start && dateRange.end) {
+            const start = new Date(dateRange.start);
+            const end = new Date(dateRange.end);
+            end.setHours(23, 59, 59, 999);
+            filteredSessions = sessions.filter(s => {
+                const d = new Date(s.timestamp);
+                return d >= start && d <= end;
+            });
+        } else {
+            filteredSessions = []; // If dates are incomplete, show nothing to prevent dumping all sessions
+        }
     }
 
     // Calculations for the report
@@ -118,7 +128,7 @@ export default function GenerateReportModal({ isOpen, onClose, patient, sessions
                             <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}>Select Session</label>
                             <select
                                 className="input-field"
-                                value={selectedSessionId}
+                                value={actualSelectedId || ''}
                                 onChange={(e) => setSelectedSessionId(e.target.value)}
                             >
                                 {sessions.map(s => {
