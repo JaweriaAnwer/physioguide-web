@@ -190,6 +190,8 @@ function normalizeSession(docSnap) {
         error_flags: extractActiveErrorFlags(data.error_flags),
         error_flags_raw: data.error_flags || {},
         recordingData: data.recordingData || null,
+        recording_url: data.recording_url || null,
+        recording_filename: data.recording_filename || null,
     };
 }
 
@@ -336,4 +338,57 @@ export const migrateGlobalPatientsToTherapist = async (uid, therapistName) => {
     await deleteBatch.commit();
 
     return { migrated: count };
+};
+
+// ---------------------------------------------------------------------------
+// Session Recording Download (Firebase Storage)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the full per-frame recording JSON from Firebase Storage.
+ * The recording is stored as a gzip-compressed JSON file. The browser's
+ * built-in fetch API automatically handles Content-Encoding: gzip
+ * decompression when the server returns it.
+ *
+ * @param {string} recordingUrl — The Firebase Storage download URL stored
+ *                                 in the Firestore session document.
+ * @returns {Promise<object[]|null>} Parsed array of per-frame PoseData, or null on failure.
+ */
+export const fetchRecordingData = async (recordingUrl) => {
+    if (!recordingUrl) return null;
+
+    try {
+        const response = await fetch(recordingUrl);
+        if (!response.ok) {
+            console.error(`Failed to fetch recording: HTTP ${response.status}`);
+            return null;
+        }
+
+        // The response should be JSON (auto-decompressed by browser if gzipped)
+        const text = await response.text();
+
+        // Unity's JsonHelper wraps arrays as { "Items": [...] }
+        let parsed;
+        try {
+            parsed = JSON.parse(text);
+        } catch (parseErr) {
+            console.error('Failed to parse recording JSON:', parseErr);
+            return null;
+        }
+
+        // Handle Unity's JsonHelper wrapper: { Items: [...] }
+        if (parsed && Array.isArray(parsed.Items)) {
+            return parsed.Items;
+        }
+        // Already a plain array
+        if (Array.isArray(parsed)) {
+            return parsed;
+        }
+
+        console.warn('Recording data is not in expected format:', typeof parsed);
+        return null;
+    } catch (err) {
+        console.error('Error fetching recording data:', err);
+        return null;
+    }
 };

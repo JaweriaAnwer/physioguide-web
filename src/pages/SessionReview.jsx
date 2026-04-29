@@ -1,9 +1,9 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, AlertCircle, Clock, Target, Zap, Printer, WifiOff } from 'lucide-react';
+import { ArrowLeft, AlertCircle, Clock, Target, Zap, Printer, WifiOff, Loader } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import SkeletonCanvas from '../components/SkeletonCanvas';
-import { findSessionAcrossPatients } from '../utils/firebaseServices';
+import { findSessionAcrossPatients, fetchRecordingData } from '../utils/firebaseServices';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function SessionReview() {
@@ -15,6 +15,8 @@ export default function SessionReview() {
     const [patientName, setPatientName] = useState('Patient');
     const [loadingSession, setLoadingSession] = useState(true);
     const [notFound, setNotFound] = useState(false);
+    const [recordingFrames, setRecordingFrames] = useState(null);
+    const [loadingRecording, setLoadingRecording] = useState(false);
 
     // Fetch real session from Firebase nested subcollection
     useEffect(() => {
@@ -38,14 +40,36 @@ export default function SessionReview() {
         load();
     }, [sessionId, currentUser]);
 
+    // Fetch recording data from Firebase Storage when recording_url is available
+    useEffect(() => {
+        if (!sessionData?.recording_url) return;
+
+        const loadRecording = async () => {
+            setLoadingRecording(true);
+            try {
+                const frames = await fetchRecordingData(sessionData.recording_url);
+                if (frames && frames.length > 0) {
+                    setRecordingFrames(frames);
+                }
+            } catch (err) {
+                console.error('Failed to load recording:', err);
+            } finally {
+                setLoadingRecording(false);
+            }
+        };
+
+        loadRecording();
+    }, [sessionData?.recording_url]);
+
     // Build the recording object from real Firebase data
     const recording = useMemo(() => {
         if (!sessionData) return null;
 
-        // recordingData is the Items array Unity stores — array of per-frame objects
-        const frames = Array.isArray(sessionData.recordingData) && sessionData.recordingData.length > 0
-            ? sessionData.recordingData
-            : null;
+        // Prefer frames fetched from Firebase Storage, then inline recordingData
+        const frames = recordingFrames
+            ?? (Array.isArray(sessionData.recordingData) && sessionData.recordingData.length > 0
+                ? sessionData.recordingData
+                : null);
 
         const summary = {
             patient_id:   sessionData.patient_id   ?? 'unknown',
@@ -59,7 +83,7 @@ export default function SessionReview() {
         };
 
         return { summary, frames };
-    }, [sessionData, patientName]);
+    }, [sessionData, patientName, recordingFrames]);
 
     const [currentFrame, setCurrentFrame] = useState(0);
     const [currentFrameData, setCurrentFrameData] = useState(null);
@@ -140,8 +164,20 @@ export default function SessionReview() {
         );
     }
 
-    // No per-frame recording data stored
+    // No per-frame recording data stored — check if still loading from Storage
     if (!recording?.frames) {
+        // Show loading state if recording is being fetched from Firebase Storage
+        if (loadingRecording) {
+            return (
+                <div className="animate-fade-in" style={{ textAlign: 'center', paddingTop: 80 }}>
+                    <Loader size={32} className="animate-spin" style={{ color: 'var(--color-accent-cyan)', marginBottom: 16 }} />
+                    <p style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>
+                        Downloading session recording from cloud...
+                    </p>
+                </div>
+            );
+        }
+
         const summary = recording?.summary;
         return (
             <div className="animate-fade-in">
@@ -197,7 +233,8 @@ export default function SessionReview() {
 
                 <div className="glass-card" style={{ padding: 24, marginTop: 16, textAlign: 'center' }}>
                     <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>
-                        Frame-by-frame replay is not available — Unity did not upload per-frame recording data for this session.
+                        Frame-by-frame replay is not available — no per-frame recording data was uploaded for this session.
+                        {sessionData?.recording_url && ' (Download may have failed — try refreshing the page.)'}
                     </p>
                 </div>
             </div>
