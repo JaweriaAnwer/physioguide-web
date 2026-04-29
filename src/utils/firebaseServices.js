@@ -5,75 +5,14 @@ import {
 } from 'firebase/firestore';
 
 // ---------------------------------------------------------------------------
-// Firestore REST ↔ JS SDK bridge
+// Supabase Configuration
 // ---------------------------------------------------------------------------
-// Unity writes sessions via the Firestore REST API, which wraps every value
-// in a type envelope:  { stringValue: ".." }  { doubleValue: 85.5 }  etc.
-// The JS SDK returns those envelopes as plain objects, so we must unwrap them.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://yuqrjilbdvxcenivppci.supabase.co';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl1cXJqaWxiZHZ4Y2VuaXZwcGNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0NDA4MzMsImV4cCI6MjA5MzAxNjgzM30.r94G_PBHG5xab1-jBdiSgtOxdtnD_7lD4r1To5Kp9L0';
 
-/**
- * Unwrap a single Firestore REST value object into a plain JS value.
- * Handles: stringValue, integerValue, doubleValue, booleanValue,
- *          nullValue, arrayValue, mapValue.
- */
-export function deserializeFirestoreValue(val) {
-    if (val === null || val === undefined) return val;
-    if (typeof val !== 'object') return val;          // already a plain scalar
-
-    if ('stringValue' in val) return val.stringValue;
-    if ('integerValue' in val) return Number(val.integerValue);
-    if ('doubleValue' in val) return Number(val.doubleValue);
-    if ('booleanValue' in val) return val.booleanValue;
-    if ('nullValue' in val) return null;
-
-    if ('arrayValue' in val) {
-        const items = val.arrayValue?.values ?? [];
-        return items.map(deserializeFirestoreValue);
-    }
-
-    if ('mapValue' in val) {
-        return deserializeFirestoreDoc(val.mapValue?.fields ?? {});
-    }
-
-    // Not a REST envelope – return as-is (already unwrapped by the JS SDK)
-    return val;
-}
-
-/**
- * Unwrap a Firestore REST `fields` map into a plain JS object.
- * Works recursively for nested maps / arrays.
- */
-export function deserializeFirestoreDoc(fields) {
-    if (!fields || typeof fields !== 'object') return fields;
-    const result = {};
-    for (const [key, val] of Object.entries(fields)) {
-        result[key] = deserializeFirestoreValue(val);
-    }
-    return result;
-}
-
-/**
- * Normalise a Firestore document snapshot.
- * If the document data looks like a REST-format `fields` map (i.e. every
- * value is an object with exactly one type key), run it through the
- * deserializer; otherwise return the plain data unchanged.
- */
-function normalizeDoc(docSnap) {
-    const raw = docSnap.data();
-    if (!raw) return null;
-
-    // Detect REST envelope: at least one field whose value is an object
-    // containing a recognised Firestore type key.
-    const typeKeys = new Set([
-        'stringValue', 'integerValue', 'doubleValue',
-        'booleanValue', 'nullValue', 'arrayValue', 'mapValue',
-    ]);
-    const isRestFormat = Object.values(raw).some(
-        v => v && typeof v === 'object' && Object.keys(v).some(k => typeKeys.has(k))
-    );
-
-    return isRestFormat ? deserializeFirestoreDoc(raw) : raw;
-}
+// ---------------------------------------------------------------------------
+// Firestore for Patient/Therapist data (unchanged)
+// ---------------------------------------------------------------------------
 
 // --- Therapist Profile ---
 
@@ -91,7 +30,7 @@ export const getTherapistProfile = async (uid) => {
 export const getPatients = async (uid) => {
     const patientsRef = collection(db, 'therapists', uid, 'patients');
     const querySnapshot = await getDocs(patientsRef);
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return querySnapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
 };
 
 export const createPatient = async (uid, patientData, generatedKey, therapistName) => {
@@ -120,49 +59,48 @@ export const getPatientById = async (uid, patientId) => {
 };
 
 export const deletePatientAndSessions = async (uid, patientId) => {
-    // 1. Get all sessions for this patient (nested subcollection)
-    const sessionsRef = collection(db, 'therapists', uid, 'patients', patientId, 'sessions');
-    const querySnapshot = await getDocs(sessionsRef);
+    // Delete sessions from Supabase
+    try {
+        await fetch(`${SUPABASE_URL}/rest/v1/sessions?patient_id=eq.${patientId}`, {
+            method: 'DELETE',
+            headers: {
+                'apikey': SUPABASE_ANON_KEY,
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+            }
+        });
+    } catch (err) {
+        console.warn('Failed to delete sessions from Supabase:', err);
+    }
 
-    // 2. Use a batch to delete all sessions and the patient doc atomically
-    const batch = writeBatch(db);
-
-    // Add session deletes to batch
-    querySnapshot.forEach((docSnap) => {
-        batch.delete(docSnap.ref);
-    });
-
-    // Add patient delete to batch
+    // Delete patient doc from Firestore
     const patientRef = doc(db, 'therapists', uid, 'patients', patientId);
-    batch.delete(patientRef);
-
-    // 3. Commit the batch
-    await batch.commit();
+    await deleteDoc(patientRef);
 };
 
-// --- Sessions (nested under therapist > patient) ---
+// ---------------------------------------------------------------------------
+// Sessions (NOW READING FROM SUPABASE)
+// ---------------------------------------------------------------------------
 
 /**
- * Normalise a session timestamp.
- * Unity sends timestamps as Unix milliseconds (integer).
- * Convert to ISO string for display, or return as-is if already a string.
+ * Normalise a timestamp to ISO string.
  */
 function normalizeTimestamp(ts) {
     if (!ts) return new Date().toISOString();
     if (typeof ts === 'number') {
         return new Date(ts).toISOString();
     }
-    return ts; // already a string
+    if (typeof ts === 'string') {
+        return ts;
+    }
+    return new Date().toISOString();
 }
 
 /**
- * Normalise error_flags from a session document.
- * Unity stores error_flags as a map { hiking: true, flexion: false, ... }.
- * Extract only the keys that are `true` and return as an array of strings.
+ * Extract active error flags from Supabase JSONB field.
  */
 function extractActiveErrorFlags(errorFlags) {
     if (!errorFlags) return [];
-    if (Array.isArray(errorFlags)) return errorFlags; // already an array
+    if (Array.isArray(errorFlags)) return errorFlags;
     if (typeof errorFlags === 'object') {
         return Object.entries(errorFlags)
             .filter(([, v]) => v === true)
@@ -172,14 +110,13 @@ function extractActiveErrorFlags(errorFlags) {
 }
 
 /**
- * Normalise a raw session doc into the shape the UI expects.
+ * Normalize a session object from Supabase to the shape the UI expects.
  */
-function normalizeSession(docSnap) {
-    const data = normalizeDoc(docSnap);
+function normalizeSession(data) {
     if (!data) return null;
 
     return {
-        id: docSnap.id,
+        id: data.id ?? '',
         patient_id: data.patient_id ?? '',
         therapist_id: data.therapist_id ?? '',
         exercise: data.exercise ?? 'unknown',
@@ -187,6 +124,7 @@ function normalizeSession(docSnap) {
         accuracy: Number(data.accuracy) || 0,
         duration_sec: Number(data.duration_sec) || 0,
         total_reps: Number(data.total_reps) || 0,
+        total_frames: Number(data.total_frames) || 0,
         error_flags: extractActiveErrorFlags(data.error_flags),
         error_flags_raw: data.error_flags || {},
         recordingData: data.recordingData || null,
@@ -196,92 +134,146 @@ function normalizeSession(docSnap) {
 }
 
 /**
- * Fetch all sessions for a patient from the nested subcollection.
- * Path: therapists/{uid}/patients/{patientId}/sessions
+ * Fetch all sessions for a patient from Supabase.
+ * GET /rest/v1/sessions?patient_id=eq.{patientId}&order=timestamp.desc
  */
 export const getPatientSessions = async (uid, patientId) => {
-    const sessionsRef = collection(db, 'therapists', uid, 'patients', patientId, 'sessions');
-    const querySnapshot = await getDocs(sessionsRef);
+    try {
+        const response = await fetch(
+            `${SUPABASE_URL}/rest/v1/sessions?patient_id=eq.${patientId}&order=timestamp.desc`,
+            {
+                method: 'GET',
+                headers: {
+                    'apikey': SUPABASE_ANON_KEY,
+                    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                }
+            }
+        );
 
-    const sessions = querySnapshot.docs
-        .map(docSnap => normalizeSession(docSnap))
-        .filter(Boolean);
+        if (!response.ok) {
+            console.error(`Failed to fetch sessions: HTTP ${response.status}`);
+            return [];
+        }
 
-    // Sort by timestamp descending (most recent first)
-    return sessions.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        const sessions = await response.json();
+        return sessions.map(s => normalizeSession(s)).filter(Boolean);
+    } catch (err) {
+        console.error('Error fetching sessions from Supabase:', err);
+        return [];
+    }
 };
 
 /**
  * Subscribe to real-time session updates for a patient.
+ * Uses polling since Supabase Realtime requires additional setup.
  * Returns an unsubscribe function.
  */
 export const subscribeToPatientSessions = (uid, patientId, callback) => {
-    const sessionsRef = collection(db, 'therapists', uid, 'patients', patientId, 'sessions');
+    let cancelled = false;
 
-    return onSnapshot(sessionsRef, (snapshot) => {
-        const sessions = snapshot.docs
-            .map(docSnap => normalizeSession(docSnap))
-            .filter(Boolean)
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-        callback(sessions);
-    }, (error) => {
-        console.error('Session subscription error:', error);
-    });
+    const poll = async () => {
+        while (!cancelled) {
+            try {
+                const sessions = await getPatientSessions(uid, patientId);
+                if (!cancelled) {
+                    callback(sessions);
+                }
+            } catch (err) {
+                console.error('Session poll error:', err);
+            }
+            // Poll every 5 seconds
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+    };
+
+    poll();
+
+    return () => { cancelled = true; };
 };
 
 /**
- * Fetch a single session by ID from the nested subcollection.
- * Requires therapist UID and patient ID to build the correct path.
+ * Fetch a single session by ID from Supabase.
  */
 export const getSessionById = async (uid, patientId, sessionId) => {
-    const docRef = doc(db, 'therapists', uid, 'patients', patientId, 'sessions', sessionId);
-    const docSnap = await getDoc(docRef);
-    if (docSnap.exists()) {
-        return normalizeSession(docSnap);
+    try {
+        const response = await fetch(
+            `${SUPABASE_URL}/rest/v1/sessions?id=eq.${sessionId}&patient_id=eq.${patientId}`,
+            {
+                method: 'GET',
+                headers: {
+                    'apikey': SUPABASE_ANON_KEY,
+                    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                }
+            }
+        );
+
+        if (!response.ok) {
+            console.error(`Failed to fetch session: HTTP ${response.status}`);
+            return null;
+        }
+
+        const sessions = await response.json();
+        if (sessions.length > 0) {
+            return normalizeSession(sessions[0]);
+        }
+        return null;
+    } catch (err) {
+        console.error('Error fetching session from Supabase:', err);
+        return null;
     }
-    return null;
 };
 
 /**
  * Search for a session across all patients of a therapist.
- * Used when we only have a sessionId but not patientId (e.g. direct URL navigation).
+ * Scans all patients and checks if the session belongs to any of them.
  */
 export const findSessionAcrossPatients = async (uid, sessionId) => {
-    const patientsRef = collection(db, 'therapists', uid, 'patients');
-    const patientsSnap = await getDocs(patientsRef);
+    try {
+        // First try to get session directly if we know patient_id
+        const response = await fetch(
+            `${SUPABASE_URL}/rest/v1/sessions?id=eq.${sessionId}`,
+            {
+                method: 'GET',
+                headers: {
+                    'apikey': SUPABASE_ANON_KEY,
+                    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                }
+            }
+        );
 
-    for (const patientDoc of patientsSnap.docs) {
-        const sessRef = doc(db, 'therapists', uid, 'patients', patientDoc.id, 'sessions', sessionId);
-        const sessSnap = await getDoc(sessRef);
-        if (sessSnap.exists()) {
-            return {
-                session: normalizeSession(sessSnap),
-                patientId: patientDoc.id,
-                patientName: patientDoc.data().full_name || patientDoc.id,
-            };
+        if (response.ok) {
+            const sessions = await response.json();
+            if (sessions.length > 0) {
+                const session = normalizeSession(sessions[0]);
+                const patientId = session.patient_id;
+
+                // Get patient name from Firestore
+                const patient = await getPatientById(uid, patientId);
+                return {
+                    session,
+                    patientId,
+                    patientName: patient?.full_name || patientId,
+                };
+            }
         }
+        return null;
+    } catch (err) {
+        console.error('Error finding session:', err);
+        return null;
     }
-    return null;
 };
 
 /**
- * Called after a new session is ingested (or can be triggered by a Cloud
- * Function). Updates the patient's last_active timestamp and recalculates
- * compliance_rate from all their sessions.
- *
- * @param {string} therapistUid  - Firestore UID of the owning therapist
- * @param {string} patientId     - e.g. "pat_ABC123"
+ * Update patient stats after a new session is added.
  */
 export const updatePatientAfterSession = async (therapistUid, patientId) => {
     try {
         const sessions = await getPatientSessions(therapistUid, patientId);
         if (sessions.length === 0) return;
 
-        // Latest session timestamp → last_active
         const latest = sessions[0];
         const lastActive = latest.timestamp ?? new Date().toISOString();
 
-        // Compliance: average accuracy across all sessions (capped 0-100)
         const avgAccuracy =
             sessions.reduce((sum, s) => sum + (Number(s.accuracy) || 0), 0) / sessions.length;
         const complianceRate = Math.min(100, Math.max(0, Math.round(avgAccuracy * 10) / 10));
@@ -296,7 +288,7 @@ export const updatePatientAfterSession = async (therapistUid, patientId) => {
     }
 };
 
-// --- Migration: Move global patients to therapist subcollection ---
+// --- Migration: Move global patients to therapist subcollection (Firestore only) ---
 
 export const getGlobalPatients = async () => {
     try {
@@ -316,7 +308,6 @@ export const migrateGlobalPatientsToTherapist = async (uid, therapistName) => {
     let count = 0;
 
     for (const patient of globalPatients) {
-        // Copy patient to therapist's subcollection
         const newRef = doc(db, 'therapists', uid, 'patients', patient.id);
         const { id, ...patientData } = patient;
         batch.set(newRef, {
@@ -329,7 +320,6 @@ export const migrateGlobalPatientsToTherapist = async (uid, therapistName) => {
 
     await batch.commit();
 
-    // Optionally delete old global patients after migration
     const deleteBatch = writeBatch(db);
     for (const patient of globalPatients) {
         const oldRef = doc(db, 'patients', patient.id);
@@ -341,19 +331,9 @@ export const migrateGlobalPatientsToTherapist = async (uid, therapistName) => {
 };
 
 // ---------------------------------------------------------------------------
-// Session Recording Download (Firebase Storage)
+// Session Recording Download (Supabase Storage)
 // ---------------------------------------------------------------------------
 
-/**
- * Fetch the full per-frame recording JSON from Firebase Storage.
- * The recording is stored as a gzip-compressed JSON file. The browser's
- * built-in fetch API automatically handles Content-Encoding: gzip
- * decompression when the server returns it.
- *
- * @param {string} recordingUrl — The Firebase Storage download URL stored
- *                                 in the Firestore session document.
- * @returns {Promise<object[]|null>} Parsed array of per-frame PoseData, or null on failure.
- */
 export const fetchRecordingData = async (recordingUrl) => {
     if (!recordingUrl) return null;
 
@@ -364,10 +344,24 @@ export const fetchRecordingData = async (recordingUrl) => {
             return null;
         }
 
-        // The response should be JSON (auto-decompressed by browser if gzipped)
-        const text = await response.text();
+        const buf = await response.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let text;
 
-        // Unity's JsonHelper wraps arrays as { "Items": [...] }
+        // Check for gzip magic bytes (1F 8B)
+        if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+            try {
+                const ds = new DecompressionStream('gzip');
+                const decompressedStream = new Response(buf).body.pipeThrough(ds);
+                text = await new Response(decompressedStream).text();
+            } catch (err) {
+                console.error('DecompressionStream failed:', err);
+                return null;
+            }
+        } else {
+            text = new TextDecoder().decode(bytes);
+        }
+
         let parsed;
         try {
             parsed = JSON.parse(text);
@@ -380,7 +374,6 @@ export const fetchRecordingData = async (recordingUrl) => {
         if (parsed && Array.isArray(parsed.Items)) {
             return parsed.Items;
         }
-        // Already a plain array
         if (Array.isArray(parsed)) {
             return parsed;
         }
