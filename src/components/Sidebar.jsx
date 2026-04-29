@@ -32,7 +32,6 @@ export default function Sidebar() {
 
     const links = [
         { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-        { to: '/patients', icon: Users, label: 'Patients' },
         { to: '/settings', icon: Settings, label: 'Settings' },
     ];
 
