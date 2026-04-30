@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import Sidebar from './components/Sidebar';
@@ -7,6 +8,7 @@ import ForgotPassword from './pages/ForgotPassword';
 import DashboardHome from './pages/DashboardHome';
 import PatientProfile from './pages/PatientProfile';
 import SessionReview from './pages/SessionReview';
+import Settings from './pages/Settings';
 
 function ProtectedLayout({ children }) {
     const { currentUser } = useAuth();
@@ -29,6 +31,15 @@ function PublicRoute({ children }) {
 }
 
 export default function App() {
+    useEffect(() => {
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'light') {
+            document.body.classList.add('light-mode');
+        } else {
+            document.body.classList.remove('light-mode');
+        }
+    }, []);
+
     return (
         <Routes>
             <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
@@ -42,14 +53,7 @@ export default function App() {
                     </ProtectedLayout>
                 }
             />
-            <Route
-                path="/patients"
-                element={
-                    <ProtectedLayout>
-                        <DashboardHome />
-                    </ProtectedLayout>
-                }
-            />
+
             <Route
                 path="/patient/:patientId"
                 element={
@@ -70,10 +74,7 @@ export default function App() {
                 path="/settings"
                 element={
                     <ProtectedLayout>
-                        <div className="animate-fade-in">
-                            <h2 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Settings</h2>
-                            <p style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>Settings will be available in a future update.</p>
-                        </div>
+                        <Settings />
                     </ProtectedLayout>
                 }
             />
