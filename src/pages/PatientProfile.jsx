@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Calendar, Target, Clock, Eye, Trash2, Printer, WifiOff } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts';
-import { getPatientById, deletePatientAndSessions, subscribeToPatientSessions } from '../utils/firebaseServices';
+import { getPatientById, deletePatientAndSessions, subscribeToPatientSessions, updatePatientAfterSession } from '../utils/firebaseServices';
 import { useAuth } from '../contexts/AuthContext';
 import GenerateReportModal from '../components/GenerateReportModal';
 
@@ -34,6 +34,11 @@ export default function PatientProfile() {
                         patientId,
                         (liveSessions) => {
                             setSessions(liveSessions);
+                            // Sync latest session timestamp & compliance back to Firestore
+                            // so the dashboard "Last Active" column stays up-to-date
+                            if (liveSessions.length > 0) {
+                                updatePatientAfterSession(currentUser.uid, patientId);
+                            }
                         }
                     );
                 }

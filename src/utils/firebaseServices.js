@@ -30,7 +30,47 @@ export const getTherapistProfile = async (uid) => {
 export const getPatients = async (uid) => {
     const patientsRef = collection(db, 'therapists', uid, 'patients');
     const querySnapshot = await getDocs(patientsRef);
-    return querySnapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+    const patients = querySnapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+
+    // For each patient, fetch their latest session from Supabase and update last_active if stale
+    const updatePromises = patients.map(async (patient) => {
+        try {
+            const response = await fetch(
+                `${SUPABASE_URL}/rest/v1/sessions?patient_id=eq.${patient.id}&order=timestamp.desc&limit=1`,
+                {
+                    method: 'GET',
+                    headers: {
+                        'apikey': SUPABASE_ANON_KEY,
+                        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                    }
+                }
+            );
+
+            if (response.ok) {
+                const sessions = await response.json();
+                if (sessions.length > 0) {
+                    const latestTimestamp = normalizeTimestamp(sessions[0].timestamp);
+                    const storedDate = new Date(patient.last_active || 0);
+                    const latestDate = new Date(latestTimestamp);
+
+                    if (latestDate > storedDate) {
+                        patient.last_active = latestTimestamp;
+                        // Also update Firestore in the background so it stays correct
+                        const patientRef = doc(db, 'therapists', uid, 'patients', patient.id);
+                        updateDoc(patientRef, { last_active: latestTimestamp }).catch(err =>
+                            console.warn('Background last_active update failed:', err)
+                        );
+                    }
+                }
+            }
+        } catch (err) {
+            // Non-critical — just use the stored last_active
+            console.warn(`Failed to fetch latest session for ${patient.id}:`, err);
+        }
+        return patient;
+    });
+
+    return Promise.all(updatePromises);
 };
 
 export const createPatient = async (uid, patientData, generatedKey, therapistName) => {
