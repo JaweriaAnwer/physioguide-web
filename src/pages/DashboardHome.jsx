@@ -130,6 +130,14 @@ export default function DashboardHome() {
         return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     };
 
+    const isActiveWithinWeek = (dateStr) => {
+        if (!dateStr) return false;
+        const lastActive = new Date(dateStr);
+        const now = new Date();
+        const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+        return (now - lastActive) <= sevenDaysMs;
+    };
+
     const handleCreatePatient = async (e) => {
         e.preventDefault();
         if (isSubmitting) return;
@@ -293,9 +301,14 @@ export default function DashboardHome() {
                                         </div>
                                     </td>
                                     <td>
-                                        <span className={`badge ${patient.status === 'critical' ? 'badge-critical' : 'badge-active'}`}>
-                                            {patient.status === 'critical' ? '● Critical' : '● Active'}
-                                        </span>
+                                        {(() => {
+                                            const active = isActiveWithinWeek(patient.last_active);
+                                            return (
+                                                <span className={`badge ${active ? 'badge-active' : 'badge-inactive'}`}>
+                                                    {active ? '● Active' : '● Inactive'}
+                                                </span>
+                                            );
+                                        })()}
                                     </td>
                                 </tr>
                             ))}
