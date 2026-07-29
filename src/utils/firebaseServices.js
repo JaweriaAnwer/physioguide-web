@@ -35,8 +35,9 @@ export const getPatients = async (uid) => {
     // For each patient, fetch their latest session from Supabase and update last_active if stale
     const updatePromises = patients.map(async (patient) => {
         try {
+            const unityPatientId = patient.id.replace('pat_', '');
             const response = await fetch(
-                `${SUPABASE_URL}/rest/v1/sessions?patient_id=eq.${patient.id}&order=timestamp.desc&limit=1`,
+                `${SUPABASE_URL}/rest/v1/sessions?patient_id=eq.${unityPatientId}&order=timestamp.desc&limit=1`,
                 {
                     method: 'GET',
                     headers: {
@@ -101,7 +102,8 @@ export const getPatientById = async (uid, patientId) => {
 export const deletePatientAndSessions = async (uid, patientId) => {
     // Delete sessions from Supabase
     try {
-        await fetch(`${SUPABASE_URL}/rest/v1/sessions?patient_id=eq.${patientId}`, {
+        const unityPatientId = patientId.replace('pat_', '');
+        await fetch(`${SUPABASE_URL}/rest/v1/sessions?patient_id=eq.${unityPatientId}`, {
             method: 'DELETE',
             headers: {
                 'apikey': SUPABASE_ANON_KEY,
@@ -179,8 +181,9 @@ function normalizeSession(data) {
  */
 export const getPatientSessions = async (uid, patientId) => {
     try {
+        const unityPatientId = patientId.replace('pat_', '');
         const response = await fetch(
-            `${SUPABASE_URL}/rest/v1/sessions?patient_id=eq.${patientId}&order=timestamp.desc`,
+            `${SUPABASE_URL}/rest/v1/sessions?patient_id=eq.${unityPatientId}&order=timestamp.desc`,
             {
                 method: 'GET',
                 headers: {
@@ -236,8 +239,9 @@ export const subscribeToPatientSessions = (uid, patientId, callback) => {
  */
 export const getSessionById = async (uid, patientId, sessionId) => {
     try {
+        const unityPatientId = patientId.replace('pat_', '');
         const response = await fetch(
-            `${SUPABASE_URL}/rest/v1/sessions?id=eq.${sessionId}&patient_id=eq.${patientId}`,
+            `${SUPABASE_URL}/rest/v1/sessions?id=eq.${sessionId}&patient_id=eq.${unityPatientId}`,
             {
                 method: 'GET',
                 headers: {
